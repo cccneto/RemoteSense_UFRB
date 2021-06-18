@@ -437,3 +437,118 @@ plot(parana_vario)
 parana.ml1 <- likfit(parana, trend = "1st", ini = c(1000, 50),
                      nug = 100)
 summary(parana.ml1)
+
+##########################################
+
+#      AULA 7
+
+
+install.packages("randomForest")
+install.packages("caret")
+
+library(sp)
+library(randomForest)
+library(raster)
+library (rgdal)
+library(tidyr)
+library(caret)
+
+# Arquivos ----------------------------------------------------------------
+
+arquivos <- list.files("./arquivos/Classificacao/variaveis/", pattern = ".tif$", full.names = T)
+arquivos
+bloco <- raster::stack(arquivos)
+bloco
+
+amostras <- rgdal::readOGR(dsn = "./arquivos/Classificacao", layer = "Amostras")
+amostras
+amostras <- sp::spTransform(amostras, "+proj=utm +zone=22 +south +datum=WGS84 +units=m +no_defs")
+amostras
+
+plot(bloco$Landsat_area_estudo_ndvi)
+plot(amostras, add = T)
+
+# Extraindo informacoes ---------------------------------------------------
+
+classes <- c(1,2,3,4,5)
+raster_poli_val <- NULL
+
+for (i in 1:length(classes)) {
+  amostra_classe <- amostras[amostras$classe_n == classes[i], ]
+  valores_raster <- raster::extract(bloco, amostra_classe, df =  T)
+  classe_num <- rep.int(classes[i], nrow(valores_raster))
+  valores_final <- cbind(valores_raster, classe_num)
+  
+  raster_poli_val <- rbind(raster_poli_val, valores_final)
+  
+}
+
+head(raster_poli_val)
+class(raster_poli_val)
+summary(raster_poli_val)
+raster_poli_val <- raster_poli_val %>% drop_na()
+summary(raster_poli_val)
+raster_poli_val["ID"] <- NULL
+
+# Separar amostras --------------------------------------------------------
+
+amostras_sep <- sample(2, nrow(raster_poli_val),
+                       replace = T,
+                       prob = c(0.70, 0.30))
+
+amostras_train <- raster_poli_val[amostras_sep==1,]
+amostras_valid <- raster_poli_val[amostras_sep==2,]
+
+class(amostras_train$classe_num)
+class(amostras_valid$classe_num)
+
+amostras_train$classe_num <- as.factor(amostras_train$classe_num)
+amostras_valid$classe_num <- as.factor(amostras_valid$classe_num)
+
+
+
+# Criar modelo RF ---------------------------------------------------------
+
+rf_modelo <- randomForest::randomForest(amostras_train$classe_num ~., data = amostras_train,
+                                        xtest = subset(amostras_valid,
+                                                       select = -classe_num),
+                                        ytest = amostras_valid$classe_num,
+                                        keep.forest = T,
+                                        do.trace = T)
+
+rf_modelo
+getTree(rf_modelo, 1)
+varImpPlot(rf_modelo)
+
+classificacao <- raster::predict(bloco, rf_modelo, type = "response")
+classificacao
+plot(classificacao)
+plot(classificacao, axes = T, col = c("darkgreen", "blue", "green", "orange", "grey"))
+
+
+# validacao mapa ----------------------------------------------------------
+
+pontos <- rgdal::readOGR(dsn =  "./arquivos/Classificacao", 
+                         layer = "Amostras_validacao")
+pontos
+plot(pontos, add = T)
+
+validacao_pontos <- raster::extract(classificacao, pontos, df = T)
+validacao_pontos$classes_pontos <- pontos$classe_n
+validacao_pontos
+
+validacao_pontos$layer <- as.factor(validacao_pontos$layer)
+validacao_pontos$classes_pontos <- as.factor(validacao_pontos$classes_pontos)
+class(validacao_pontos)
+
+matriz_confusao <- caret::confusionMatrix(validacao_pontos$classes_pontos, validacao_pontos$layer)
+matriz_confusao
+
+usuario <- (diag(matriz_confusao$table)/rowSums(matriz_confusao$table))
+usuario
+
+produtor <- (diag(matriz_confusao$table)/colSums(matriz_confusao$table))
+produtor
+
+
+write.csv(matriz_confusao$table, "./arquivos/MatrizConfusao.csv")
